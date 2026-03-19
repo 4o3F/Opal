@@ -1,5 +1,5 @@
 {
-  "$schema": "https://deno.land/x/deno/cli/schemas/config-file.v1.json",
+  "$schema": "https://raw.githubusercontent.com/denoland/deno/refs/heads/main/cli/schemas/config-file.v1.json",
   "workspace": ["./apps/*", "./packages/*", "./plugins/*"],
   "imports": {
     "@opal/host": "./apps/host/src/mod.ts",

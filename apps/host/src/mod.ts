@@ -1,4 +1,6 @@
 // @opal/host - Web Server module exports
-// Placeholder for Phase 3 implementation
 
-export {};
+export * from "./api/mod.ts";
+export * from "./process/mod.ts";
+export * from "./renderer/mod.ts";
+export * from "./resolver/mod.ts";
