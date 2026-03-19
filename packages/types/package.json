@@ -1,0 +1,12 @@
+{
+  "name": "@opal/types",
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/mod.ts"
+  },
+  "scripts": {
+    "check": "deno check src/mod.ts",
+    "test": "deno test"
+  }
+}

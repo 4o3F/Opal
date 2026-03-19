@@ -1,0 +1,13 @@
+{
+  "name": "@opal/example-plugin",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "deno check src/main.ts",
+    "test": "deno test"
+  },
+  "dependencies": {
+    "@opal/types": "workspace:*"
+  }
+}

@@ -1,3 +1,5 @@
+# Opal Design Document
+
 ## High-Level Architecture
 
 ```
@@ -5,24 +7,22 @@ Client
   |
   v
 +----------------------------------+
-| Host Web Server                  |
-| - HTTP API                       |
+| Host Web Server (Deno)           |
+| - HTTP API (Hono)                |
 | - Route Resolver                 |
-| - Plugin Instance Registry       |
-| - Worker Manager                 |
+| - Plugin Process Manager         |
 | - Feed Response Renderer         |
 +----------------------------------+
           |
-          | poll over MessagePort
+          | JSON-RPC 2.0 over stdin/stdout
           v
 +----------------------------------+
-| Plugin Instance Worker           |
+| Plugin Process (Deno subprocess) |
 | - Plugin route handler           |
 | - Source fetcher                 |
 | - Parsing / extraction           |
 | - Normalization                  |
 | - In-memory cache / last result  |
-| - Optional self-refresh loop     |
 +----------------------------------+
           |
           | direct outbound HTTP
@@ -35,82 +35,93 @@ Client
 ### Host-to-plugin communication is poll-only
 
 The host should not assume it can push work into a plugin and get streaming callbacks or complex bidirectional orchestration.
-When an HTTP request arrives, the host resolves the target plugin instance and polls that worker for the current feed result.
+When an HTTP request arrives, the host resolves the target plugin instance and polls that process for the current feed result.
 
 ### Plugin owns source access
 
 The host should not fetch source data on behalf of plugins.
 Each plugin should:
 
-- declares which URLs or domains it needs
-- performs its own HTTP fetches
-- parses and normalizes data itself
-- stores its own latest materialized result in memory
+- declare which URLs or domains it needs
+- perform its own HTTP fetches
+- parse and normalize data itself
+- store its own latest materialized result in memory
+
+### Plugin isolation via subprocess
+
+Plugins run as isolated Deno subprocesses with restricted permissions:
+
+- Network access limited to declared hosts via `--allow-net`
+- No filesystem access (`--deny-read`, `--deny-write`)
+- No subprocess spawning (`--deny-run`)
+- No environment access (`--deny-env`)
+- No FFI access (`--deny-ffi`)
 
 ## Plugin Manifest
 
 ```typescript
-export type PluginManifest = {
-  apiVersion: "feed-plugin/v1";
+export const API_VERSION = "feed-plugin/v1" as const;
 
+export type PluginManifest = {
+  apiVersion: typeof API_VERSION;
   name: string;
-  version: string;
+  version: string; // strict semver: X.Y.Z
   description?: string;
+  author?: string;
+  homepage?: string;
 
   entrypoint: {
-    worker: string; // relative path inside plugin bundle, e.g. "./worker.js"
+    worker: string; // relative path starting with "./" (no path traversal)
   };
 
-  routes: PluginRouteManifest[];
+  routes: [PluginRouteManifest, ...PluginRouteManifest[]]; // at least one
 
   network: {
     allow: NetworkAllowRule[];
   };
 
   defaults?: {
-    refreshIntervalSec?: number; // default plugin refresh cadence
-    requestTimeoutMs?: number; // default upstream request timeout inside plugin
-    staleAfterSec?: number; // when cached result becomes stale
+    refreshIntervalMs?: number;
+    timeoutMs?: number;
+    staleThresholdMs?: number;
   };
 };
 
 export type PluginRouteManifest = {
-  id: string; // stable internal route id, e.g. "latest"
-  path: string; // public route segment, e.g. "latest" or "tag/:name"
-  title?: string;
+  id: string; // stable internal route id, must be unique
+  path: string; // public route segment, must be unique
   description?: string;
-
-  paramsSchema?: JsonSchemaLite; // route input contract
-  refreshIntervalSec?: number; // override plugin default
-  staleAfterSec?: number; // override plugin default
-
+  paramsSchema?: Record<string, ParamSchema>;
   output: {
-    types: Array<"rss" | "atom" | "jsonfeed">;
+    types: [FeedFormat, ...FeedFormat[]]; // at least one
+    defaultType?: FeedFormat; // must be in types array
   };
 };
 
-export type NetworkAllowRule = {
-  kind: "suffix" | "prefix" | "exact";
-  value: string;
-};
+export type FeedFormat = "rss" | "atom" | "jsonfeed";
 
-export type JsonSchemaLite = {
-  type: "object";
-  properties?: Record<string, JsonSchemaLiteProperty>;
-  required?: string[];
-  additionalProperties?: boolean;
-};
+// Network allow rules with origin-based semantics
+export type NetworkAllowRule =
+  | { kind: "origin"; value: string }      // exact origin match
+  | { kind: "hostSuffix"; value: string }  // domain suffix (e.g., "example.com" matches "api.example.com")
+  | { kind: "pathPrefix"; origin: string; path: string }; // origin + path prefix
 
-export type JsonSchemaLiteProperty = {
-  type: "string" | "number" | "integer" | "boolean";
-  enum?: Array<string | number | boolean>;
-  pattern?: string;
-  minimum?: number;
-  maximum?: number;
-};
+// Route parameter schema - discriminated union by type
+export type ParamSchema =
+  | { type: "string"; description?: string; default?: string; enum?: string[]; pattern?: string }
+  | { type: "number"; description?: string; default?: number; enum?: number[] }
+  | { type: "boolean"; description?: string; default?: boolean };
 ```
 
-An example.
+### Network Allow Rule Semantics
+
+| Rule Kind | Example | Matches | Does NOT Match |
+|-----------|---------|---------|----------------|
+| `origin` | `https://api.example.com` | `https://api.example.com/users` | `https://example.com/api` |
+| `hostSuffix` | `example.com` | `example.com`, `api.example.com` | `evil-example.com` |
+| `pathPrefix` | `origin: https://api.example.com, path: /v1` | `/v1`, `/v1/`, `/v1/users` | `/v1beta`, `/v2` |
+
+### Example Manifest
 
 ```json
 {
@@ -119,236 +130,207 @@ An example.
   "version": "0.1.0",
   "description": "Produces feeds from Example News.",
   "entrypoint": {
-    "worker": "./worker.js"
+    "worker": "./src/main.ts"
   },
   "routes": [
     {
       "id": "latest",
       "path": "latest",
-      "title": "Latest news",
+      "description": "Latest news",
       "output": {
-        "types": ["rss", "atom", "jsonfeed"]
-      },
-      "refreshIntervalSec": 300,
-      "staleAfterSec": 900
+        "types": ["rss", "atom", "jsonfeed"],
+        "defaultType": "rss"
+      }
     },
     {
       "id": "topic",
       "path": "topic",
-      "title": "Topic feed",
+      "description": "Topic feed",
       "paramsSchema": {
-        "type": "object",
-        "properties": {
-          "name": {
-            "type": "string",
-            "pattern": "^[a-z0-9-]+$"
-          }
-        },
-        "required": ["name"],
-        "additionalProperties": false
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z0-9-]+$"
+        }
       },
       "output": {
         "types": ["rss", "atom", "jsonfeed"]
-      },
-      "refreshIntervalSec": 300,
-      "staleAfterSec": 900
+      }
     }
   ],
   "network": {
     "allow": [
-      { "kind": "suffix", "value": "https://example.com" },
-      { "kind": "suffix", "value": "https://api.example.com" }
+      { "kind": "origin", "value": "https://api.example.com" },
+      { "kind": "hostSuffix", "value": "cdn.example.com" }
     ]
   },
   "defaults": {
-    "refreshIntervalSec": 300,
-    "requestTimeoutMs": 10000,
-    "staleAfterSec": 900
+    "refreshIntervalMs": 300000,
+    "timeoutMs": 10000,
+    "staleThresholdMs": 900000
   }
 }
 ```
 
-Required:
+### Manifest Validation Rules
 
-- apiVersion
-- name
-- version
-- entrypoint.worker
-- at least one route
-- network.allow with at least one allow rule
-- each route must have unique id
-- each route must have unique path
+Required fields:
+- `apiVersion` must be `"feed-plugin/v1"`
+- `name` must be non-empty string
+- `version` must be strict semver (`X.Y.Z`)
+- `entrypoint.worker` must be relative path starting with `./` without path traversal
+- At least one route
+- Each route must have unique `id` and `path`
+- Each route must have at least one output type
+- `defaultType` must be one of the declared types
+
+Security validations:
+- `hostSuffix` value must be non-empty, no scheme or path
+- `pathPrefix` path must start with `/`
+- Worker path cannot contain `..` (path traversal)
 
 ## IPC Protocol Between Host and Plugin
 
 ### Transport
 
-Transport using `MessagePort`, while messages must be structured-clone-safe and plain JSON-like objects.
+JSON-RPC 2.0 over stdin/stdout. Each message is a single JSON line terminated by `\n`.
 
-### Principles
-
-- The plugin must not push refresh results, events, or logs through the main control channel unless they are direct replies.
-- Every request has an `id`. Every response echoes the same `id`.
-- A request gets exactly one terminal response.
-- Use a protocol version in every message.
-
-### Envelope Definitions
+### Message Types
 
 ```typescript
-export type IpcEnvelope = HostRequest | PluginResponse;
+export const JSON_RPC_VERSION = "2.0" as const;
 
-type BaseEnvelope = {
-  protocol: "feed-ipc/v1";
+export type JsonRpcMethod = "get_status" | "get_feed" | "shutdown";
+
+// Request
+export type JsonRpcRequest<M extends JsonRpcMethod> = {
+  jsonrpc: "2.0";
   id: string;
+  method: M;
+  params: MethodParamsMap[M];
 };
 
-export type HostRequest = GetStatusRequest | GetFeedRequest | ShutdownRequest;
+// Success response
+export type JsonRpcSuccessResponse<R> = {
+  jsonrpc: "2.0";
+  id: string;
+  result: R;
+};
 
-export type PluginResponse =
-  | GetStatusResponse
-  | GetFeedResponse
-  | ShutdownResponse
-  | ErrorResponse;
+// Error response
+export type JsonRpcErrorResponse = {
+  jsonrpc: "2.0";
+  id: string | null;
+  error: {
+    code: number;
+    message: string;
+    data?: unknown;
+  };
+};
 ```
 
-### Host2Plugin
+### Error Codes
 
-#### `get_status` request
+| Code | Name | Description |
+|------|------|-------------|
+| -32700 | PARSE_ERROR | Invalid JSON |
+| -32600 | INVALID_REQUEST | Invalid request structure |
+| -32601 | METHOD_NOT_FOUND | Unknown method |
+| -32602 | INVALID_PARAMS | Invalid parameters |
+| -32603 | INTERNAL_ERROR | Internal error |
+| -32001 | PLUGIN_NOT_READY | Plugin not ready |
+| -32002 | ROUTE_NOT_FOUND | Route not found |
+| -32003 | FETCH_FAILED | Upstream fetch failed |
+| -32004 | TIMEOUT | Operation timed out |
+
+### Host → Plugin
+
+#### `get_status`
 
 Polls current worker health and route state.
 
 ```typescript
-export type GetStatusRequest = BaseEnvelope & {
-  kind: "request";
-  method: "get_status";
-  params: {};
-};
+// Request
+{ jsonrpc: "2.0", id: "1", method: "get_status", params: {} }
+
+// Response
+{
+  jsonrpc: "2.0",
+  id: "1",
+  result: {
+    state: "starting" | "ready" | "degraded" | "error" | "stopped",
+    startedAt: "2024-01-01T00:00:00Z",
+    routeStates: [
+      {
+        routeId: "latest",
+        status: "ready" | "stale" | "warming" | "error",
+        lastUpdated?: "2024-01-01T00:00:00Z",
+        errorMessage?: "..."
+      }
+    ]
+  }
+}
 ```
 
-#### `get_feed` request
+#### `get_feed`
 
 Requests the latest normalized feed document for a route.
 
 ```typescript
-export type GetFeedRequest = BaseEnvelope & {
-  kind: "request";
-  method: "get_feed";
+// Request
+{
+  jsonrpc: "2.0",
+  id: "2",
+  method: "get_feed",
   params: {
-    routeId: string;
-    input: Record<string, string | number | boolean | null>;
-  };
-};
+    routeId: "latest",
+    params: { "name": "technology" }
+  }
+}
+
+// Response
+{
+  jsonrpc: "2.0",
+  id: "2",
+  result: {
+    title: "Example News - Technology",
+    description: "Latest technology news",
+    items: [
+      {
+        id: "123",
+        title: "Article Title",
+        url: "https://example.com/article/123",
+        contentText: "...",
+        datePublished: "2024-01-01T12:00:00Z"
+      }
+    ]
+  }
+}
 ```
 
-- routeId should match a route declared in the manifest already loaded by the host.
-- input should already be parsed by the host.
-- The host may also validate input against the manifest route schema before sending.
-
-#### `shutdown` request
+#### `shutdown`
 
 Requests graceful shutdown.
 
 ```typescript
-export type ShutdownRequest = BaseEnvelope & {
-  kind: "request";
-  method: "shutdown";
-  params: {
-    reason?: string;
-  };
-};
+// Request
+{ jsonrpc: "2.0", id: "3", method: "shutdown", params: {} }
+
+// Response
+{ jsonrpc: "2.0", id: "3", result: { stoppedAt: "2024-01-01T00:00:00Z" } }
 ```
 
-### Plugin2Host
-
-#### `get_status` response
-
-```typescript
-export type GetStatusResponse = BaseEnvelope & {
-  kind: "response";
-  method: "get_status";
-  ok: true;
-  result: {
-    state: "starting" | "ready" | "degraded" | "error" | "stopped";
-    startedAt: string;
-    routeStates: Array<{
-      routeId: string;
-      status: "empty" | "ready" | "stale" | "refreshing" | "error";
-      updatedAt?: string;
-      itemCount?: number;
-      lastError?: PluginError;
-    }>;
-    lastError?: PluginError;
-  };
-};
-```
-
-#### `get_feed` response
-
-```typescript
-export type GetFeedResponse = BaseEnvelope & {
-  kind: "response";
-  method: "get_feed";
-  ok: true;
-  result:
-    | {
-        status: "ready" | "stale";
-        updatedAt: string;
-        document: FeedDocument;
-      }
-    | {
-        status: "warming";
-      };
-};
-```
-
-#### `shutdown` response
-
-```typescript
-export type ShutdownResponse = BaseEnvelope & {
-  kind: "response";
-  method: "shutdown";
-  ok: true;
-  result: {
-    stoppedAt: string;
-  };
-};
-```
-
-### Generic Error Response
-
-```typescript
-export type ErrorResponse = BaseEnvelope & {
-  kind: "response";
-  ok: false;
-  error: PluginError;
-};
-
-export type PluginError = {
-  code:
-    | "BAD_REQUEST"
-    | "UNKNOWN_METHOD"
-    | "ROUTE_NOT_FOUND"
-    | "INVALID_INPUT"
-    | "NOT_READY"
-    | "UPSTREAM_ERROR"
-    | "INTERNAL_ERROR";
-
-  message: string;
-  retriable?: boolean;
-  details?: Record<string, unknown>;
-};
-```
-
-### FeedDocument shared type
+## FeedDocument Schema
 
 ```typescript
 export type FeedDocument = {
   title: string;
+  description?: string;
   homePageUrl?: string;
   feedUrl?: string;
-  description?: string;
+  icon?: string;
+  favicon?: string;
+  authors?: FeedAuthor[];
   language?: string;
-  updatedAt?: string;
   items: FeedItem[];
 };
 
@@ -359,34 +341,84 @@ export type FeedItem = {
   contentHtml?: string;
   contentText?: string;
   summary?: string;
-  publishedAt?: string;
-  updatedAt?: string;
-  authors?: Array<{
-    name: string;
-    url?: string;
-  }>;
+  image?: string;
+  datePublished?: string; // ISO 8601
+  dateModified?: string;  // ISO 8601
+  authors?: FeedAuthor[];
+  tags?: string[];
+  attachments?: FeedAttachment[];
+  language?: string;
+};
+
+export type FeedAuthor = {
+  name: string;
+  url?: string;
+  email?: string;
+};
+
+export type FeedAttachment = {
+  url: string;
+  mimeType: string;
+  sizeBytes?: number;
+  title?: string;
+  durationSeconds?: number;
 };
 ```
 
 ## Life Cycle
-### Startup
-1. Host loads plugin bundle
-2. Host reads and validates manifest
-3. Host applies permission/network policy
-4. Host starts worker with startup data
-5. Worker initializes its own internal state
-6. Host may poll get_status until route state becomes usable
 
-### Request serving
-1. HTTP request hits host
-2. Host resolves route from already-loaded manifest
-3. Host validates input
-4. Host sends get_feed
-5. Plugin responds with ready, stale, or warming
-6. Host renders response format
+### Startup
+
+1. Host loads plugin manifest from `manifest.json`
+2. Host validates manifest structure and security rules
+3. Host spawns plugin as Deno subprocess with restricted permissions
+4. Plugin initializes and listens on stdin
+5. Host polls `get_status` until state becomes `ready`
+
+### Request Serving
+
+1. HTTP request arrives at host
+2. Host resolves plugin and route from URL
+3. Host validates input against route's paramsSchema
+4. Host sends `get_feed` request via stdin
+5. Plugin responds with FeedDocument
+6. Host renders response in requested format (RSS/Atom/JSON Feed)
 
 ### Shutdown
-1. Host sends shutdown
-2. Plugin stops timers and internal work
-3. Plugin replies
-4. Host terminates worker if needed
+
+1. Host sends `shutdown` request
+2. Plugin stops internal work and responds
+3. Host terminates subprocess if needed
+
+## Security Model
+
+### Trust Boundary
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│ Docker Container                                            │
+│  ┌─────────────────────────────────────────────────────┐   │
+│  │ Host Process (Deno) - TRUSTED                       │   │
+│  │  - Full permissions                                 │   │
+│  │  - Controls plugin lifecycle                        │   │
+│  │  - Enforces network policy                          │   │
+│  └──────────────┬──────────────────────────────────────┘   │
+│                 │ spawn subprocess                          │
+│  ┌──────────────▼──────────────────────────────────────┐   │
+│  │ Plugin Process (Deno) - UNTRUSTED                   │   │
+│  │  --allow-net=<declared hosts only>                  │   │
+│  │  --deny-read --deny-write --deny-run                │   │
+│  │  --deny-env --deny-ffi                              │   │
+│  │  stdin/stdout JSON-RPC only                         │   │
+│  └─────────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Security Invariants
+
+1. Plugin cannot read/write filesystem
+2. Plugin cannot spawn subprocesses
+3. Plugin cannot access environment variables
+4. Plugin network access limited to declared hosts
+5. Plugin can only communicate via JSON-RPC over stdio
+6. Host validates all manifest paths to prevent traversal

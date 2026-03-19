@@ -1,0 +1,14 @@
+{
+  "name": "@opal/host",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "deno check src/main.ts",
+    "test": "deno test --allow-read --allow-net",
+    "dev": "deno run --watch --allow-net --allow-read --allow-run=deno src/main.ts"
+  },
+  "dependencies": {
+    "@opal/types": "workspace:*"
+  }
+}
