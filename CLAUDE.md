@@ -146,7 +146,10 @@ When working with this codebase:
 
 | File | Description |
 |------|-------------|
+| `README.md` | Project documentation and quick start guide |
 | `DESIGN.md` | Architecture design, type definitions, protocol spec |
+| `Dockerfile` | Multi-stage Docker build |
+| `docker-compose.yml` | Development and production compose |
 | `packages/types/src/` | Implemented type definitions and validators |
 | `LICENSE` | GPL-3.0 license |
 
