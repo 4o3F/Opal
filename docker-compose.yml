@@ -1,0 +1,71 @@
+services:
+  opal-host:
+    profiles: ["prod"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+    image: opal-host:latest
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 20s
+    ports:
+      - "${OPAL_PORT:-8080}:8080"
+    environment:
+      DENO_DIR: /deno-dir
+      DENO_NO_UPDATE_CHECK: "1"
+      DENO_NO_PROMPT: "1"
+    volumes:
+      - type: bind
+        source: ${OPAL_PLUGINS_DIR:-./plugins}
+        target: /app/plugins
+        read_only: true
+      - type: volume
+        source: deno_cache
+        target: /deno-dir
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cpus: 1.0
+    mem_limit: 512m
+    pids_limit: 256
+
+  opal-host-dev:
+    profiles: ["dev"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+    image: opal-host:dev
+    init: true
+    stop_grace_period: 20s
+    ports:
+      - "${OPAL_DEV_PORT:-8080}:8080"
+    environment:
+      DENO_DIR: /deno-dir
+      DENO_NO_UPDATE_CHECK: "1"
+      DENO_NO_PROMPT: "1"
+    volumes:
+      - type: bind
+        source: .
+        target: /app
+      - type: volume
+        source: deno_cache
+        target: /deno-dir
+    command:
+      - deno
+      - run
+      - --watch
+      - --config=/app/deno.json
+      - --allow-net
+      - --allow-read=/app,/deno-dir
+      - --allow-run=deno
+      - apps/host/src/main.ts
+    cpus: 1.0
+    mem_limit: 512m
+    pids_limit: 256
+
+volumes:
+  deno_cache:

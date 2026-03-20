@@ -2,9 +2,6 @@
   "name": "@opal/example-plugin",
   "version": "0.1.0",
   "exports": "./src/main.ts",
-  "imports": {
-    "@opal/types": "jsr:@opal/types@^0.1.0"
-  },
   "tasks": {
     "check": "deno check src/main.ts",
     "test": "deno test"

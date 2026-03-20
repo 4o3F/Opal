@@ -47,12 +47,12 @@ opal/
 | Module | Status | Description |
 |--------|--------|-------------|
 | `@opal/types` | **Implemented** | IPC protocol, manifest, feed types |
-| `@opal/host` | Planned | HTTP API, routing, process management, rendering |
-| `@opal/example-plugin` | Planned | Example plugin implementation |
+| `@opal/host` | **Implemented** | HTTP API, routing, process management, rendering |
+| `@opal/example-plugin` | **Implemented** | JSON-RPC worker with JSONPlaceholder API |
 
 ## Development Status
 
-**Current Phase:** Implementation (Phase 2 complete)
+**Current Phase:** Implementation (Phase 5 complete)
 
 - [x] Architecture design (`DESIGN.md`)
 - [x] Monorepo setup (Deno + Nx + pnpm)
@@ -60,11 +60,13 @@ opal/
 - [x] `@opal/types` - Plugin manifest types + validation
 - [x] `@opal/types` - Feed document types
 - [x] Security tests for type guards
-- [ ] `@opal/host` - Hono API routes
-- [ ] `@opal/host` - Route resolver
-- [ ] `@opal/host` - Plugin process manager
-- [ ] `@opal/host` - Feed renderer
-- [ ] `@opal/example-plugin` - Example implementation
+- [x] `@opal/host` - Hono API routes
+- [x] `@opal/host` - Route resolver
+- [x] `@opal/host` - Plugin process manager
+- [x] `@opal/host` - Feed renderer
+- [x] `@opal/example-plugin` - Example implementation (manifest.json + main.ts)
+- [x] Docker deployment (Dockerfile + docker-compose.yml)
+- [ ] Integration tests
 
 ## Key Specifications
 
@@ -103,12 +105,18 @@ Supported formats: RSS, Atom, JSON Feed
 ```bash
 # Type check
 deno check packages/types/src/mod.ts
+deno check apps/host/src/mod.ts
 
 # Run tests
 deno test packages/types/src/ --allow-read
+deno test apps/host/src/ --allow-read --allow-run --allow-net
 
 # Lint
 deno lint packages/types/src/
+deno lint apps/host/src/
+
+# Start host server (development)
+deno run --allow-net --allow-read --allow-run apps/host/src/main.ts
 ```
 
 ## Testing Strategy
@@ -146,6 +154,9 @@ When working with this codebase:
 
 | Date | Change |
 |------|--------|
+| 2026-03-20 | Phase 5 complete: Docker deployment (Dockerfile + docker-compose.yml + .dockerignore) |
+| 2026-03-19 | Phase 4 complete: @opal/example-plugin implemented with JSONPlaceholder API |
+| 2026-03-19 | Phase 3 complete: @opal/host implemented (API, resolver, process manager, renderers) |
 | 2026-03-19 | Phase 2 complete: @opal/types implemented with security tests |
 | 2026-03-19 | Phase 1 complete: Monorepo setup |
 | 2026-03-19 | Initial CLAUDE.md generated from project scan |

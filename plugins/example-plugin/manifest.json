@@ -1,0 +1,49 @@
+{
+  "apiVersion": "feed-plugin/v1",
+  "name": "example-news",
+  "version": "0.1.0",
+  "description": "Example plugin that fetches posts from JSONPlaceholder API",
+  "author": "Opal Team",
+  "entrypoint": {
+    "worker": "./src/main.ts"
+  },
+  "routes": [
+    {
+      "id": "latest",
+      "path": "latest",
+      "description": "Latest posts from JSONPlaceholder",
+      "output": {
+        "types": ["rss", "atom", "jsonfeed"],
+        "defaultType": "rss"
+      }
+    },
+    {
+      "id": "by-user",
+      "path": "user/:userId",
+      "description": "Posts by a specific user",
+      "paramsSchema": {
+        "userId": {
+          "type": "string",
+          "description": "User ID (1-10)"
+        }
+      },
+      "output": {
+        "types": ["rss", "atom", "jsonfeed"],
+        "defaultType": "rss"
+      }
+    }
+  ],
+  "network": {
+    "allow": [
+      {
+        "kind": "origin",
+        "value": "https://jsonplaceholder.typicode.com"
+      }
+    ]
+  },
+  "defaults": {
+    "refreshIntervalMs": 300000,
+    "timeoutMs": 10000,
+    "staleThresholdMs": 600000
+  }
+}

@@ -1,0 +1,32 @@
+# Git
+.git
+.gitignore
+
+# IDE
+.idea
+.vscode
+*.swp
+*.swo
+
+# Nx
+.nx
+
+# Node
+node_modules
+
+# Build artifacts
+dist
+coverage
+
+# Documentation
+*.md
+!README.md
+LICENSE
+
+# Local config
+.env
+.env.*
+*.local
+
+# Plugins (mounted at runtime)
+plugins/
